@@ -1,0 +1,80 @@
+name: Build & Release APK
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout private repo
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Prepare release keystore
+        if: ${{ github.event_name == 'release' }}
+        run: |
+          if [ -n "${{ secrets.RELEASE_KEYSTORE }}" ]; then
+            echo "Decoding keystore from secret"
+            mkdir -p android/app
+            echo "${{ secrets.RELEASE_KEYSTORE }}" | base64 --decode > android/app/keystore.jks
+            cat > android/app/key.properties << 'EOF'
+          storePassword=${{ secrets.KEYSTORE_PASSWORD }}
+          keyPassword=${{ secrets.KEY_PASSWORD }}
+          keyAlias=${{ secrets.KEY_ALIAS }}
+          storeFile=keystore.jks
+          EOF
+          else
+            echo "❌ RELEASE_KEYSTORE secret not set; cannot sign a release. Configure RELEASE_KEYSTORE, KEYSTORE_PASSWORD, KEY_PASSWORD, and KEY_ALIAS."
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Derive release version from pubspec
+        run: |
+          VERSION_LINE="$(grep -m1 '^version:' pubspec.yaml)"
+          VERSION_NAME="$(echo "$VERSION_LINE" | sed -E 's/^version:[[:space:]]*([^+]+).*/\1/' | xargs)"
+          VERSION_CODE="$(echo "$VERSION_LINE" | sed -E 's/.*\+([0-9]+)[[:space:]]*$/\1/' | xargs)"
+          if [ -z "$VERSION_NAME" ]; then
+            echo "❌ Could not parse version name from pubspec.yaml"
+            exit 1
+          fi
+          if ! [[ "$VERSION_CODE" =~ ^[0-9]+$ ]]; then
+            echo "❌ Could not parse numeric version code from pubspec.yaml"
+            exit 1
+          fi
+          if [ "${GITHUB_REF_NAME}" != "v${VERSION_NAME}" ]; then
+            echo "❌ Release tag '${GITHUB_REF_NAME}' does not match pubspec version 'v${VERSION_NAME}'"
+            exit 1
+          fi
+          echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
+          echo "VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
+
+      - name: Generate Code (Drift/JSON)
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test --reporter compact
+
+      - name: Build APK (ARM64)
+        run: flutter build apk --target-platform android-arm64 --split-per-abi --build-name "$VERSION_NAME" --build-number "$VERSION_CODE"
+
+      - name: Upload APKs to the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/app/outputs/flutter-apk/*.apk

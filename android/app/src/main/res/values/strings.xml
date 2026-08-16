@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="widget_balance_desc">View your total balance at a glance</string>
+    <string name="widget_recent_desc">See your latest transactions</string>
+    <string name="widget_category_desc">Breakdown of your monthly spending by category</string>
+</resources>
