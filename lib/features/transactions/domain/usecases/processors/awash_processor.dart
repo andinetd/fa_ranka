@@ -60,7 +60,37 @@ class AwashProcessor extends BankProcessingSupport implements BankProcessor {
       return;
     }
 
-    Map<String, dynamic> finalData = {};
+    Map<String, dynamic> finalData = <String, dynamic>{
+      'source': smsData['source'] ?? 'sms_parse',
+      'transaction_id': smsData['transactionId'],
+      'transactionId': smsData['transactionId'],
+      'date': smsData['date'],
+      'time': smsData['time'],
+      'amount': smsData['amount'],
+      'commission': smsData['charge'],
+      'vat': smsData['vat'],
+      'total': smsData['amount'],
+      'from_account':
+          dir == TransactionDirection.credit ? smsData['counterparty'] : null,
+      'to_account':
+          dir == TransactionDirection.debit ? smsData['counterparty'] : null,
+      'beneficiary_account': null,
+      'beneficiary_bank': null,
+      'transaction_type':
+          BankProcessingSupport.fallbackTransactionType(
+            smsData['direction']?.toString(),
+          ) ??
+          'Bank Transfer',
+      'reason': smsData['reason'] ?? smsData['counterparty'],
+      'till_number': null,
+      'tin': null,
+      'vat_reg': null,
+      'url': smsData['url'],
+      'direction': smsData['direction'],
+      'balance': smsData['balance'],
+      'counterparty': smsData['counterparty'],
+      'transaction_ref': smsData['transactionId'],
+    };
     bool serverDown = false;
 
     if (url != null && url.isNotEmpty) {
@@ -74,11 +104,12 @@ class AwashProcessor extends BankProcessingSupport implements BankProcessor {
       final decision = await decideDeepFetch(url);
       if (decision == ReceiptFetchDecision.fetch) {
         try {
-          finalData = await AwashReceiptService.fetchAndParseHtmlReceipt(
+          final deepData = await AwashReceiptService.fetchAndParseHtmlReceipt(
             url,
             smsText: sms.body,
           );
-          if (BankProcessingSupport.serverUnavailableFromResult(finalData)) {
+          finalData = {...finalData, ...deepData};
+          if (BankProcessingSupport.serverUnavailableFromResult(deepData)) {
             markServerUnavailable(url);
             serverDown = isConfirmedBlocked(url);
           }
@@ -87,28 +118,47 @@ class AwashProcessor extends BankProcessingSupport implements BankProcessor {
             markServerUnavailable(url);
             serverDown = isConfirmedBlocked(url);
           }
-          finalData = AwashReceiptService.parseSmsForReceiptFields(sms.body);
+          final fallbackData = AwashReceiptService.parseSmsForReceiptFields(
+            sms.body,
+          );
+          finalData = {...finalData, ...fallbackData};
         }
       } else {
-        finalData = AwashReceiptService.parseSmsForReceiptFields(sms.body);
+        final fallbackData = AwashReceiptService.parseSmsForReceiptFields(
+          sms.body,
+        );
+        finalData = {...finalData, ...fallbackData};
         if (decision == ReceiptFetchDecision.smsOnlyDomainBlocked) {
           serverDown = true;
         }
       }
     } else {
       session?.recordDecision(ReceiptFetchDecision.smsOnlyNoLink);
-      finalData = AwashReceiptService.parseSmsForReceiptFields(sms.body);
+      final fallbackData = AwashReceiptService.parseSmsForReceiptFields(
+        sms.body,
+      );
+      finalData = {...finalData, ...fallbackData};
     }
 
+    finalData['url'] ??= url;
+    finalData['transaction_id'] ??= smsData['transactionId'];
+    finalData['transactionId'] ??=
+        finalData['transaction_id'] ?? smsData['transactionId'];
+    finalData['date'] ??= smsData['date'];
+    finalData['time'] ??= smsData['time'];
+    finalData['amount'] ??= smsData['amount'];
+    finalData['commission'] ??=
+        BankProcessingSupport.toDouble(finalData['commission']) ??
+        BankProcessingSupport.toDouble(finalData['charge']) ??
+        smsData['charge'];
+    finalData['vat'] ??= smsData['vat'];
+    finalData['total'] ??= finalData['amount'] ?? smsData['amount'];
     finalData['direction'] ??= smsData['direction'];
     finalData['balance'] ??= smsData['balance'];
-    finalData['transaction_type'] ??= BankProcessingSupport.fallbackTransactionType(
-      finalData['direction']?.toString(),
-    );
-    finalData['reason'] = BankProcessingSupport.normalizeBusinessReason(
-      finalData['reason']?.toString(),
-    );
-    applyAwashCategoryHints(finalData, sms.body);
+    finalData['transaction_type'] ??=
+        BankProcessingSupport.fallbackTransactionType(
+          finalData['direction']?.toString(),
+        );
 
     if (url != null) {
       finalData['counterparty'] =
@@ -121,12 +171,29 @@ class AwashProcessor extends BankProcessingSupport implements BankProcessor {
                   finalData['to_account'] ??
                   finalData['counterparty'] ??
                   smsData['counterparty']);
+    } else {
+      finalData['counterparty'] ??= smsData['counterparty'];
     }
+
+    if (finalData['reason'] == null ||
+        finalData['reason'].toString().trim().isEmpty) {
+      finalData['reason'] = smsData['reason'] ?? finalData['counterparty'];
+    }
+    finalData['reason'] = BankProcessingSupport.normalizeBusinessReason(
+      finalData['reason']?.toString(),
+    );
+    if (finalData['reason']?.isEmpty == true) {
+      finalData['reason'] =
+          smsData['reason'] ?? finalData['counterparty'] ?? '';
+    }
+    applyAwashCategoryHints(finalData, sms.body);
 
     await db.updateSmsParsedFields(
       smsId: sms.id,
       transactionId:
-          finalData['transaction_id']?.toString() ?? smsData['transactionId'],
+          finalData['transactionId']?.toString() ??
+          finalData['transaction_id']?.toString() ??
+          smsData['transactionId'],
       date: finalData['date']?.toString(),
       time: finalData['time']?.toString(),
       amount: BankProcessingSupport.toDouble(finalData['amount']),
@@ -155,18 +222,16 @@ class AwashProcessor extends BankProcessingSupport implements BankProcessor {
           ..where((t) => t.id.equals(sms.id)))
         .getSingle();
 
-    final forceUncategorized = shouldForceUncategorizedCategory(
-      source: finalData['source']?.toString(),
-      hadDeepParseAttempt: url != null,
-    );
-
-    if (forceUncategorized || dir == TransactionDirection.unknown) {
+    if (dir == TransactionDirection.unknown) {
       finalData['parsedCategory'] = 'Uncategorized';
     } else if (BankProcessingSupport.isExplicitlyEmptyReason(finalData)) {
       finalData['parsedCategory'] = 'Empty';
     } else {
-      finalData['parsedCategory'] =
-          await categorizeReason(finalData['reason']?.toString() ?? finalData['transaction_type']?.toString());
+      final reason =
+          BankProcessingSupport.cleanCandidate(finalData['reason']) ??
+          BankProcessingSupport.cleanCandidate(finalData['transaction_type']) ??
+          'General';
+      finalData['parsedCategory'] = await categorizeReason(reason);
     }
 
     final localPath = finalData['localReceiptPath'] as String?;
