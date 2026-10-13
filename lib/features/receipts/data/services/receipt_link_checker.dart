@@ -13,13 +13,16 @@ enum ReceiptLinkStatus {
 }
 
 class ReceiptLinkChecker {
-  static const _headers = {'User-Agent': 'Mozilla/5.0'};
+  static const _headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+  };
   static const _timeout = Duration(seconds: 5);
   static const _cbeTimeout = Duration(seconds: 30);
 
   Future<ReceiptLinkStatus> checkLink(String url) async {
     final uri = Uri.parse(url);
-    final timeout = _isCbeHost(uri) ? _cbeTimeout : _timeout;
+    final timeout =
+        (_isCbeHost(uri) || _isAwashHost(uri)) ? _cbeTimeout : _timeout;
     if (_shouldSkipHead(uri)) {
       return _checkWithGet(url, timeout);
     }
@@ -46,12 +49,14 @@ class ReceiptLinkChecker {
   }
 
   bool _shouldSkipHead(Uri uri) =>
-      _isCbeHost(uri) || _isBoaHost(uri);
+      _isCbeHost(uri) || _isBoaHost(uri) || _isAwashHost(uri);
 
   bool _isCbeHost(Uri uri) => uri.host.toLowerCase().contains('cbe.com.et');
 
   bool _isBoaHost(Uri uri) =>
       uri.host.toLowerCase().contains('bankofabyssinia');
+
+  bool _isAwashHost(Uri uri) => uri.host.toLowerCase().contains('awash');
 
   Future<ReceiptLinkStatus> _checkWithGet(
     String url,

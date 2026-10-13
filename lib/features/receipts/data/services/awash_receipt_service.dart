@@ -344,7 +344,10 @@ class AwashReceiptService {
       }
 
       String text = _extractTextFromHtml(response.body);
-      Map<String, dynamic> result = {'source': 'html_parse'};
+      Map<String, dynamic> result = {
+        'source': 'html_parse',
+        'url': url,
+      };
 
       final localPath = await ReceiptStorageService.saveHtmlReceipt(
         transactionId: _receiptIdFromUrl(url),
