@@ -34,6 +34,11 @@ extension SmsLogic on AppDatabase {
         'ALTER TABLE budget_configs ADD COLUMN end_at INTEGER NOT NULL DEFAULT 0',
       );
     } catch (_) {}
+    try {
+      await customStatement(
+        "ALTER TABLE budget_configs ADD COLUMN category_mode TEXT NOT NULL DEFAULT 'include'",
+      );
+    } catch (_) {}
   }
 
   Future<void> _ensureTransactionSplitsTable() async {
@@ -176,6 +181,7 @@ extension SmsLogic on AppDatabase {
     required String period,
     required double amount,
     required List<String> categories,
+    String categoryMode = 'include',
     required String account,
     int startAt = 0,
     int endAt = 0,
@@ -185,14 +191,15 @@ extension SmsLogic on AppDatabase {
     final categoriesJson = jsonEncode(categories);
     await customInsert(
       '''
-        INSERT INTO budget_configs (name, period, amount, categories_json, account, start_at, end_at, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO budget_configs (name, period, amount, categories_json, category_mode, account, start_at, end_at, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ''',
       variables: [
         Variable<String>(name),
         Variable<String>(period),
         Variable<double>(amount),
         Variable<String>(categoriesJson),
+        Variable<String>(categoryMode),
         Variable<String>(account),
         Variable<int>(startAt),
         Variable<int>(endAt),
@@ -209,6 +216,7 @@ extension SmsLogic on AppDatabase {
     required String period,
     required double amount,
     required List<String> categories,
+    String categoryMode = 'include',
     required String account,
     int startAt = 0,
     int endAt = 0,
@@ -219,7 +227,7 @@ extension SmsLogic on AppDatabase {
     await customUpdate(
       '''
         UPDATE budget_configs
-        SET name = ?, period = ?, amount = ?, categories_json = ?, account = ?, start_at = ?, end_at = ?, updated_at = ?
+        SET name = ?, period = ?, amount = ?, categories_json = ?, category_mode = ?, account = ?, start_at = ?, end_at = ?, updated_at = ?
         WHERE id = ?
       ''',
       variables: [
@@ -227,6 +235,7 @@ extension SmsLogic on AppDatabase {
         Variable<String>(period),
         Variable<double>(amount),
         Variable<String>(categoriesJson),
+        Variable<String>(categoryMode),
         Variable<String>(account),
         Variable<int>(startAt),
         Variable<int>(endAt),
@@ -246,7 +255,7 @@ extension SmsLogic on AppDatabase {
   Future<List<BudgetConfigRow>> getBudgetConfigs() async {
     await _ensureBudgetConfigsTable();
     final rows = await customSelect('''
-      SELECT id, name, period, amount, categories_json, account, start_at, end_at, created_at, updated_at
+      SELECT id, name, period, amount, categories_json, category_mode, account, start_at, end_at, created_at, updated_at
       FROM budget_configs
       ORDER BY updated_at DESC
       ''').get();
@@ -260,12 +269,14 @@ extension SmsLogic on AppDatabase {
       } catch (_) {
         decoded = [];
       }
+      final categoryMode = row.data['category_mode'] as String? ?? 'include';
       return BudgetConfigRow(
         id: row.read<int>('id'),
         name: row.read<String>('name'),
         period: row.read<String>('period'),
         amount: row.read<double>('amount'),
         categories: decoded,
+        categoryMode: categoryMode,
         account: row.read<String>('account'),
         startAt: row.read<int>('start_at'),
         endAt: row.read<int>('end_at'),

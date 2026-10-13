@@ -366,6 +366,10 @@ class _BudgetsScreenState extends ConsumerState<BudgetsScreen>
   }) {
     final spent = budget.categories.isEmpty
         ? spentByCategory.values.fold<double>(0, (sum, v) => sum + v)
+        : budget.isExcludeMode
+        ? spentByCategory.entries
+            .where((entry) => !budget.categories.contains(entry.key))
+            .fold<double>(0, (sum, entry) => sum + entry.value)
         : budget.categories.fold<double>(
             0,
             (sum, category) => sum + (spentByCategory[category] ?? 0),

@@ -63,6 +63,7 @@ class BudgetConfigRow {
   final String period;
   final double amount;
   final List<String> categories;
+  final String categoryMode; // 'include' or 'exclude'
   final String account;
   final int startAt;
   final int endAt;
@@ -75,12 +76,15 @@ class BudgetConfigRow {
     required this.period,
     required this.amount,
     required this.categories,
+    this.categoryMode = 'include',
     required this.account,
     required this.startAt,
     required this.endAt,
     required this.createdAt,
     required this.updatedAt,
   });
+
+  bool get isExcludeMode => categoryMode == 'exclude';
 }
 
 class GoalRow {

@@ -24,24 +24,51 @@ class BudgetAlertResult {
 }
 
 class BudgetAlertChecker {
-  static int _daysForPeriod(String period) {
-    switch (period) {
-      case 'Weekly':
-        return 7;
-      case 'Monthly':
-        return 30;
-      case 'Quarterly':
-        return 90;
-      case 'Yearly':
-        return 365;
-      default:
-        return 30;
+  static ({int startMs, int endMs}) _getPeriodRange(BudgetConfigRow budget, DateTime now) {
+    if (budget.startAt > 0 && budget.endAt > 0) {
+      return (startMs: budget.startAt, endMs: budget.endAt);
     }
+
+    final startOfDay = DateTime(now.year, now.month, now.day);
+    DateTime start;
+    DateTime end;
+
+    switch (budget.period) {
+      case 'Weekly':
+        start = startOfDay.subtract(Duration(days: now.weekday - 1));
+        end = start.add(const Duration(days: 7));
+        break;
+      case 'Monthly':
+        start = DateTime(now.year, now.month, 1);
+        end = DateTime(now.year, now.month + 1, 1);
+        break;
+      case 'Quarterly':
+        final quarter = ((now.month - 1) / 3).floor();
+        start = DateTime(now.year, quarter * 3 + 1, 1);
+        end = DateTime(now.year, (quarter + 1) * 3 + 1, 1);
+        break;
+      case 'Yearly':
+        start = DateTime(now.year, 1, 1);
+        end = DateTime(now.year + 1, 1, 1);
+        break;
+      default:
+        // Default to last 30 days
+        start = startOfDay.subtract(const Duration(days: 30));
+        end = startOfDay.add(const Duration(days: 1));
+        break;
+    }
+
+    return (
+      startMs: start.millisecondsSinceEpoch,
+      endMs: end.millisecondsSinceEpoch,
+    );
   }
 
-  static String _currentPeriodKey(String period) {
-    final now = DateTime.now();
-    switch (period) {
+  static String _currentPeriodKey(BudgetConfigRow budget, DateTime now) {
+    if (budget.startAt > 0 && budget.endAt > 0) {
+      return '${budget.startAt}_${budget.endAt}';
+    }
+    switch (budget.period) {
       case 'Weekly':
         final weekStart = now.subtract(Duration(days: now.weekday - 1));
         return DateFormat("yyyy-'W'ww").format(weekStart);
@@ -77,10 +104,7 @@ class BudgetAlertChecker {
     final now = DateTime.now();
 
     for (final budget in budgets) {
-      final days = _daysForPeriod(budget.period);
-      final cutoff = now
-          .subtract(Duration(days: days))
-          .millisecondsSinceEpoch;
+      final range = _getPeriodRange(budget, now);
 
       // Get alert thresholds for this budget
       final prefix = 'budget_${budget.id}_';
@@ -96,24 +120,68 @@ class BudgetAlertChecker {
       double spent = 0;
       for (final txn in allTxns) {
         if (txn.direction != TransactionDirection.debit) continue;
-        if (txn.smsTimestamp < cutoff) continue;
+        if (txn.smsTimestamp < range.startMs || txn.smsTimestamp >= range.endMs) {
+          continue;
+        }
+
+        // Account filter if specified
+        if (budget.account.isNotEmpty && budget.account != 'All Accounts') {
+          final bank = (txn.bankName ?? '').toLowerCase();
+          if (!bank.contains(budget.account.toLowerCase())) continue;
+        }
 
         // If budget has no categories, match all transactions
         if (budget.categories.isEmpty) {
           spent += txn.amount;
-        } else if (budget.categories.contains(txn.parsedCategory)) {
-          spent += txn.amount;
-        } else if (splitMap[txn.id]
-            ?.any((s) => budget.categories.contains(s.category)) ??
-            false) {
-          spent += txn.amount;
+        } else if (budget.isExcludeMode) {
+          final txnSplits = splitMap[txn.id];
+          if (txnSplits != null && txnSplits.isNotEmpty) {
+            double includedSplitAmount = 0;
+            double splitSum = 0;
+            for (final split in txnSplits) {
+              splitSum += split.amount;
+              if (!budget.categories.contains(split.category)) {
+                includedSplitAmount += split.amount;
+              }
+            }
+            spent += includedSplitAmount;
+
+            // Handle unallocated remainder if parent category is NOT excluded
+            final remainder = txn.amount - splitSum;
+            if (remainder > 0.009 && !budget.categories.contains(txn.parsedCategory)) {
+              spent += remainder;
+            }
+          } else if (!budget.categories.contains(txn.parsedCategory)) {
+            spent += txn.amount;
+          }
+        } else {
+          final txnSplits = splitMap[txn.id];
+          if (txnSplits != null && txnSplits.isNotEmpty) {
+            double matchedSplitAmount = 0;
+            double splitSum = 0;
+            for (final split in txnSplits) {
+              splitSum += split.amount;
+              if (budget.categories.contains(split.category)) {
+                matchedSplitAmount += split.amount;
+              }
+            }
+            spent += matchedSplitAmount;
+
+            // Handle unallocated remainder if parent category is in budget
+            final remainder = txn.amount - splitSum;
+            if (remainder > 0.009 && budget.categories.contains(txn.parsedCategory)) {
+              spent += remainder;
+            }
+          } else if (budget.categories.contains(txn.parsedCategory)) {
+            spent += txn.amount;
+          }
         }
       }
 
       if (budget.amount <= 0) continue;
       final usage = spent / budget.amount;
 
-      final periodKey = _currentPeriodKey(budget.period);
+      final periodKey = _currentPeriodKey(budget, now);
 
       for (final threshold in thresholds) {
         final thresholdFraction = threshold / 100;

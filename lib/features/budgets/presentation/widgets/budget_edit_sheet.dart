@@ -30,6 +30,7 @@ class EditBudgetSheetState extends ConsumerState<EditBudgetSheet> {
   late String _selectedAccount;
   late Set<String> _selectedCategories;
   late List<String> _categoryNames;
+  late String _categoryFilterMode; // 'include', 'exclude', 'all'
 
   static const _periodOptions = [
     'Weekly',
@@ -56,6 +57,9 @@ class EditBudgetSheetState extends ConsumerState<EditBudgetSheet> {
     _selectedAccount = b.account;
     _selectedCategories = {...b.categories};
     _categoryNames = b.categories.toList();
+    _categoryFilterMode = b.categories.isEmpty
+        ? 'all'
+        : (b.isExcludeMode ? 'exclude' : 'include');
   }
 
   @override
@@ -246,62 +250,144 @@ class EditBudgetSheetState extends ConsumerState<EditBudgetSheet> {
               cursorColor: isDark ? DarkAppColors.homeAccentGreen : AppColors.homeNavigationSelected,
             ),
             SizedBox(height: dims(12)),
-            TextField(
-              controller: _categoryController,
-              decoration: _inputDecoration(
-                'Categories',
-                icon: IconButton(
-                  icon: Icon(Icons.add,
-                      color: isDark ? DarkAppColors.homeAccentGreen : AppColors.homeNavigationSelected),
-                  onPressed: () {
-                    final c = _categoryController.text.trim();
-                    if (c.isEmpty) return;
-                    setState(() {
-                      _selectedCategories.add(c);
-                      _categoryController.clear();
-                    });
-                  },
-                ),
-              ),
-              style: TextStyle(
-                color: isDark ? DarkAppColors.appBarForeground : null,
-              ),
-              cursorColor: isDark ? DarkAppColors.homeAccentGreen : AppColors.homeNavigationSelected,
-            ),
-            SizedBox(height: dims(8)),
             Align(
               alignment: Alignment.centerLeft,
-              child: Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: _selectedCategories
-                    .map((c) => InputChip(
-                          label: Text(c),
-                          onDeleted: () => setState(() => _selectedCategories.remove(c)),
-                        ))
-                    .toList(),
+              child: Text(
+                'Category Scope',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: isDark ? DarkAppColors.appBarForeground : const Color(0xFF374151),
+                ),
               ),
             ),
-            if (_categoryController.text.isNotEmpty) ...[
+            SizedBox(height: dims(6)),
+            SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(
+                  value: 'include',
+                  label: Text('Include'),
+                  tooltip: 'Only track chosen categories',
+                ),
+                ButtonSegment(
+                  value: 'exclude',
+                  label: Text('All except'),
+                  tooltip: 'Track all spending except chosen categories',
+                ),
+                ButtonSegment(
+                  value: 'all',
+                  label: Text('All'),
+                  tooltip: 'Track all spending without exclusions',
+                ),
+              ],
+              selected: {_categoryFilterMode},
+              onSelectionChanged: (newSelection) {
+                setState(() {
+                  _categoryFilterMode = newSelection.first;
+                  if (_categoryFilterMode == 'all') {
+                    _selectedCategories.clear();
+                    _categoryController.clear();
+                  }
+                });
+              },
+              style: ButtonStyle(
+                visualDensity: VisualDensity.compact,
+              ),
+            ),
+            if (_categoryFilterMode != 'all') ...[
+              SizedBox(height: dims(12)),
+              TextField(
+                controller: _categoryController,
+                decoration: _inputDecoration(
+                  _categoryFilterMode == 'exclude'
+                      ? 'Categories to exclude'
+                      : 'Categories to include',
+                  hint: _categoryFilterMode == 'exclude'
+                      ? 'Type category to exclude and tap Add'
+                      : 'Type category and tap Add',
+                  icon: IconButton(
+                    icon: Icon(Icons.add,
+                        color: isDark ? DarkAppColors.homeAccentGreen : AppColors.homeNavigationSelected),
+                    onPressed: () {
+                      final c = _categoryController.text.trim();
+                      if (c.isEmpty) return;
+                      setState(() {
+                        _selectedCategories.add(c);
+                        _categoryController.clear();
+                      });
+                    },
+                  ),
+                ),
+                style: TextStyle(
+                  color: isDark ? DarkAppColors.appBarForeground : null,
+                ),
+                cursorColor: isDark ? DarkAppColors.homeAccentGreen : AppColors.homeNavigationSelected,
+              ),
               SizedBox(height: dims(8)),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: _categoryNames
-                      .where((c) =>
-                          !_selectedCategories.contains(c) &&
-                          c.toLowerCase().contains(_categoryController.text.toLowerCase()))
-                      .take(8)
-                      .map((c) => ActionChip(
-                            label: Text(c),
-                            onPressed: () => setState(() {
-                              _selectedCategories.add(c);
-                              _categoryController.clear();
-                            }),
-                          ))
-                      .toList(),
+              if (_selectedCategories.isNotEmpty)
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: _selectedCategories
+                        .map((c) => InputChip(
+                              avatar: _categoryFilterMode == 'exclude'
+                                  ? const Icon(Icons.block, size: 16, color: Colors.redAccent)
+                                  : null,
+                              label: Text(c),
+                              onDeleted: () => setState(() => _selectedCategories.remove(c)),
+                            ))
+                        .toList(),
+                  ),
+                ),
+              if (_categoryController.text.isNotEmpty) ...[
+                SizedBox(height: dims(8)),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: _categoryNames
+                        .where((c) =>
+                            !_selectedCategories.contains(c) &&
+                            c.toLowerCase().contains(_categoryController.text.toLowerCase()))
+                        .take(8)
+                        .map((c) => ActionChip(
+                              label: Text(c),
+                              onPressed: () => setState(() {
+                                _selectedCategories.add(c);
+                                _categoryController.clear();
+                              }),
+                            ))
+                        .toList(),
+                  ),
+                ),
+              ],
+            ] else ...[
+              Padding(
+                padding: dims.symmetric(v: 10),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.check_circle,
+                      size: dims.icon(18),
+                      color: isDark
+                          ? DarkAppColors.homeAccentGreen
+                          : AppColors.homeAccentGreen,
+                    ),
+                    SizedBox(width: dims.spacingSm),
+                    Text(
+                      'Tracking all spending across every category',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                        color: isDark
+                            ? DarkAppColors.appBarForeground
+                            : const Color(0xFF111827),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
@@ -358,16 +444,30 @@ class EditBudgetSheetState extends ConsumerState<EditBudgetSheet> {
   Future<void> _handleSave() async {
     final db = ref.read(databaseProvider);
     final typedCategory = _categoryController.text.trim();
-    if (typedCategory.isNotEmpty) {
+    if (typedCategory.isNotEmpty && _categoryFilterMode != 'all') {
       _selectedCategories.add(typedCategory);
+    }
+    if (_categoryFilterMode == 'all') {
+      _selectedCategories.clear();
     }
     final newName = _nameController.text.trim();
     final amount = double.tryParse(_amountController.text.trim());
 
-    if (newName.isEmpty || _selectedCategories.isEmpty || amount == null || amount <= 0 || amount.isNaN || amount.isInfinite) {
+    if (newName.isEmpty ||
+        (_categoryFilterMode != 'all' && _selectedCategories.isEmpty) ||
+        amount == null ||
+        amount <= 0 ||
+        amount.isNaN ||
+        amount.isInfinite) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter a valid name, categories, and amount.')),
+        SnackBar(
+          content: Text(
+            _categoryFilterMode == 'exclude'
+                ? 'Please enter a valid name, amount, and at least one category to exclude.'
+                : 'Please enter a valid name, categories, and amount.',
+          ),
+        ),
       );
       return;
     }
@@ -407,6 +507,7 @@ class EditBudgetSheetState extends ConsumerState<EditBudgetSheet> {
         period: _selectedPeriod,
         amount: amount,
         categories: _selectedCategories.toList(),
+        categoryMode: _categoryFilterMode == 'exclude' ? 'exclude' : 'include',
         account: _selectedAccount,
         startAt: _selectedPeriod == 'One time'
             ? DateTime(_selectedStartDate!.year, _selectedStartDate!.month, _selectedStartDate!.day)

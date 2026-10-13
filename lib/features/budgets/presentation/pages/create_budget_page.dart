@@ -37,7 +37,8 @@ class _CreateBudgetPageState extends ConsumerState<CreateBudgetPage> {
   DateTime? _selectedEndDate;
   final _selectedCategories = <String>{};
   String _selectedAccount = 'All Accounts';
-  bool _trackAllSpending = false;
+  // Mode: 'include' (Specific categories), 'exclude' (All except chosen), 'all' (All spending)
+  String _categoryFilterMode = 'include';
 
   @override
   void initState() {
@@ -61,11 +62,10 @@ class _CreateBudgetPageState extends ConsumerState<CreateBudgetPage> {
   Future<void> _handleSave() async {
     final amount = double.tryParse(_amountController.text.trim());
     final typedCategory = _categoryInputController.text.trim();
-    if (typedCategory.isNotEmpty) {
+    if (typedCategory.isNotEmpty && _categoryFilterMode != 'all') {
       _selectedCategories.add(typedCategory);
-      _trackAllSpending = false;
     }
-    if (_trackAllSpending) {
+    if (_categoryFilterMode == 'all') {
       _selectedCategories.clear();
     }
     if (_budgetName.isEmpty ||
@@ -82,12 +82,14 @@ class _CreateBudgetPageState extends ConsumerState<CreateBudgetPage> {
       return;
     }
 
-    if (!_trackAllSpending && _selectedCategories.isEmpty) {
+    if (_categoryFilterMode != 'all' && _selectedCategories.isEmpty) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
+        SnackBar(
           content: Text(
-            'Please add at least one category or select "Track all spending".',
+            _categoryFilterMode == 'exclude'
+                ? 'Please add at least one category to exclude, or choose "All spending".'
+                : 'Please add at least one category or select "All spending".',
           ),
         ),
       );
@@ -140,6 +142,7 @@ class _CreateBudgetPageState extends ConsumerState<CreateBudgetPage> {
         period: _selectedPeriod,
         amount: amount,
         categories: _selectedCategories.toList(),
+        categoryMode: _categoryFilterMode == 'exclude' ? 'exclude' : 'include',
         account: _selectedAccount,
         startAt: _selectedStartDate != null
             ? DateTime(
@@ -387,14 +390,60 @@ class _CreateBudgetPageState extends ConsumerState<CreateBudgetPage> {
               ),
               cursorColor: isDark ? DarkAppColors.homeAccentGreen : AppColors.homeNavigationSelected,
             ),
-            if (!_trackAllSpending) ...[
+            SizedBox(height: dims(14)),
+            Text(
+              'Category Scope',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: isDark ? DarkAppColors.appBarForeground : const Color(0xFF374151),
+              ),
+            ),
+            SizedBox(height: dims(6)),
+            SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(
+                  value: 'include',
+                  label: Text('Include'),
+                  tooltip: 'Only track chosen categories',
+                ),
+                ButtonSegment(
+                  value: 'exclude',
+                  label: Text('All except'),
+                  tooltip: 'Track all spending except chosen categories',
+                ),
+                ButtonSegment(
+                  value: 'all',
+                  label: Text('All'),
+                  tooltip: 'Track all spending without exclusions',
+                ),
+              ],
+              selected: {_categoryFilterMode},
+              onSelectionChanged: (newSelection) {
+                setState(() {
+                  _categoryFilterMode = newSelection.first;
+                  if (_categoryFilterMode == 'all') {
+                    _selectedCategories.clear();
+                    _categoryInputController.clear();
+                  }
+                });
+              },
+              style: ButtonStyle(
+                visualDensity: VisualDensity.compact,
+              ),
+            ),
+            if (_categoryFilterMode != 'all') ...[
               SizedBox(height: dims(10)),
               TextField(
                 controller: _categoryInputController,
                 textInputAction: TextInputAction.next,
                 decoration: _inputDecoration(
-                  label: 'Categories',
-                  hint: 'Type category and tap Add',
+                  label: _categoryFilterMode == 'exclude'
+                      ? 'Categories to exclude'
+                      : 'Categories to include',
+                  hint: _categoryFilterMode == 'exclude'
+                      ? 'Type category to exclude and tap Add'
+                      : 'Type category and tap Add',
                   isDark: isDark,
                   dims: dims,
                   suffixIcon: IconButton(
@@ -407,7 +456,6 @@ class _CreateBudgetPageState extends ConsumerState<CreateBudgetPage> {
                       setState(() {
                         _selectedCategories.add(category);
                         _categoryInputController.clear();
-                        _trackAllSpending = false;
                       });
                     },
                   ),
@@ -427,6 +475,9 @@ class _CreateBudgetPageState extends ConsumerState<CreateBudgetPage> {
                     children: _selectedCategories
                         .map(
                           (category) => InputChip(
+                            avatar: _categoryFilterMode == 'exclude'
+                                ? const Icon(Icons.block, size: 16, color: Colors.redAccent)
+                                : null,
                             label: Text(category),
                             onDeleted: () => setState(
                               () => _selectedCategories.remove(category),
@@ -464,35 +515,9 @@ class _CreateBudgetPageState extends ConsumerState<CreateBudgetPage> {
                       .toList(),
                 ),
               ),
-              SizedBox(height: dims(8)),
-              Row(
-                children: [
-                  if (_selectedCategories.isNotEmpty) ...[
-                    Text(
-                      'or ',
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: isDark
-                            ? DarkAppColors.balanceCardMuted
-                            : const Color(0xFF6B7280),
-                      ),
-                    ),
-                  ],
-                  TextButton.icon(
-                    icon: Icon(Icons.public, size: dims.icon(18)),
-                    label: const Text('Track all spending'),
-                    onPressed: () => setState(() {
-                      _trackAllSpending = true;
-                      _selectedCategories.clear();
-                      _categoryInputController.clear();
-                    }),
-                  ),
-                ],
-              ),
-            ],
-            if (_trackAllSpending)
+            ] else ...[
               Padding(
-                padding: dims.symmetric(v: 4),
+                padding: dims.symmetric(v: 10),
                 child: Row(
                   children: [
                     Icon(
@@ -504,24 +529,19 @@ class _CreateBudgetPageState extends ConsumerState<CreateBudgetPage> {
                     ),
                     SizedBox(width: dims.spacingSm),
                     Text(
-                      'Tracking all spending',
+                      'Tracking all spending across every category',
                       style: TextStyle(
-                        fontSize: 14,
+                        fontSize: 13,
                         fontWeight: FontWeight.w500,
                         color: isDark
                             ? DarkAppColors.appBarForeground
                             : const Color(0xFF111827),
                       ),
                     ),
-                    const Spacer(),
-                    TextButton(
-                      onPressed: () =>
-                          setState(() => _trackAllSpending = false),
-                      child: const Text('Remove'),
-                    ),
                   ],
                 ),
               ),
+            ],
             SizedBox(height: dims(10)),
             DropdownButtonFormField<String>(
               initialValue: _selectedAccount,

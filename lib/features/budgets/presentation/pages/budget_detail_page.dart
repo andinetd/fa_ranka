@@ -195,12 +195,26 @@ class _BudgetDetailPageState extends ConsumerState<BudgetDetailPage> {
               final filteredDebits = allTxns.where((txn) {
                 if (txn.direction != TransactionDirection.debit) return false;
                 if (!_matchesAccount(budget, txn)) return false;
-                if (budget.categories.isNotEmpty &&
-                    !budget.categories.contains(txn.parsedCategory) &&
-                    !(splitMap[txn.id]
-                        ?.any((s) => budget.categories.contains(s.category)) ??
-                        false)) {
-                  return false;
+                if (budget.categories.isNotEmpty) {
+                  if (budget.isExcludeMode) {
+                    // Excluded if the transaction or all its splits are in the excluded list
+                    final isExcludedCat = budget.categories.contains(txn.parsedCategory);
+                    final splits = splitMap[txn.id];
+                    if (isExcludedCat && (splits == null || splits.isEmpty)) {
+                      return false;
+                    }
+                    if (splits != null && splits.isNotEmpty) {
+                      final hasAnyNonExcludedSplit = splits.any((s) => !budget.categories.contains(s.category));
+                      if (!hasAnyNonExcludedSplit && isExcludedCat) return false;
+                    }
+                  } else {
+                    if (!budget.categories.contains(txn.parsedCategory) &&
+                        !(splitMap[txn.id]
+                            ?.any((s) => budget.categories.contains(s.category)) ??
+                            false)) {
+                      return false;
+                    }
+                  }
                 }
                 return true;
               }).toList();
@@ -491,7 +505,7 @@ class _BudgetDetailPageState extends ConsumerState<BudgetDetailPage> {
                       ),
                       SizedBox(height: dims(14)),
                       SectionCard(
-                        title: 'Categories',
+                        title: budget.isExcludeMode ? 'Excluded Categories' : 'Categories',
                         isDark: isDark,
                         child: budget.categories.isEmpty
                             ? Padding(
@@ -517,6 +531,44 @@ class _BudgetDetailPageState extends ConsumerState<BudgetDetailPage> {
                                     ),
                                   ],
                                 ),
+                              )
+                            : budget.isExcludeMode
+                            ? Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Padding(
+                                    padding: dims.only(b: 8),
+                                    child: Text(
+                                      'Tracking all spending except:',
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        color: isDark
+                                            ? DarkAppColors.balanceCardMuted
+                                            : const Color(0xFF6B7280),
+                                      ),
+                                    ),
+                                  ),
+                                  Wrap(
+                                    spacing: 8,
+                                    runSpacing: 8,
+                                    children: budget.categories.map((category) {
+                                      return Chip(
+                                        avatar: const Icon(Icons.block, size: 16, color: Colors.redAccent),
+                                        label: Text(
+                                          category,
+                                          style: TextStyle(
+                                            color: isDark ? Colors.black : null,
+                                            fontSize: 12,
+                                          ),
+                                        ),
+                                        backgroundColor: isDark
+                                            ? Colors.white70
+                                            : Colors.grey.shade200,
+                                        side: BorderSide.none,
+                                      );
+                                    }).toList(),
+                                  ),
+                                ],
                               )
                             : Wrap(
                                 spacing: 8,
