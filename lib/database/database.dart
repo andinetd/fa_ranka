@@ -7,6 +7,9 @@ import 'package:path/path.dart' as p;
 import 'models/database_models.dart';
 export 'models/database_models.dart';
 export 'database_sms_logic.dart';
+export 'database_budget_queries.dart';
+export 'database_analytics_queries.dart';
+export 'database_goals_logic.dart';
 export 'database_retry.dart';
 
 part 'database.g.dart';
