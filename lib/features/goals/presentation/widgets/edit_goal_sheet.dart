@@ -4,9 +4,12 @@ import 'package:faranka/app/core/providers/calendar_mode_provider.dart';
 import 'package:faranka/app/core/providers/database_provider.dart';
 import 'package:faranka/app/core/providers/display_size_provider.dart';
 import 'package:faranka/app/core/theme/app_colors.dart';
-import 'package:faranka/app/core/utils/date_formatter.dart';
 import 'package:faranka/database/database.dart';
 import 'package:faranka/features/transactions/presentation/providers/transaction_data_providers.dart';
+
+import 'goal_form_fields.dart';
+
+export 'goal_form_fields.dart';
 
 class EditGoalSheet extends ConsumerStatefulWidget {
   final GoalRow? goal;
@@ -69,9 +72,6 @@ class _EditGoalSheetState extends ConsumerState<EditGoalSheet> {
     _startingBalanceController.dispose();
     super.dispose();
   }
-
-  String _formatDate(DateTime date, CalendarMode mode) =>
-      date.fmt('MMM d, yyyy', mode);
 
   @override
   Widget build(BuildContext context) {
@@ -249,7 +249,7 @@ class _EditGoalSheetState extends ConsumerState<EditGoalSheet> {
               items: _periodOptions
                   .map(
                     (p) => DropdownMenuItem(
-                      value: p == 'One time' ? null : p,
+                      value: p,
                       child: Text(
                         p,
                         style: TextStyle(
@@ -266,81 +266,18 @@ class _EditGoalSheetState extends ConsumerState<EditGoalSheet> {
               },
             ),
             SizedBox(height: dims(8)),
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              title: Text(
-                'Start date',
-                style: TextStyle(
-                  color: isDark ? DarkAppColors.appBarForeground : null,
-                ),
-              ),
-              subtitle: Text(
-                _selectedStartDate == null
-                    ? 'Choose a start date'
-                    : _formatDate(_selectedStartDate!, calMode),
-                style: TextStyle(
-                  color: isDark ? DarkAppColors.balanceCardMuted : null,
-                ),
-              ),
-              trailing: Icon(
-                Icons.calendar_today_outlined,
-                color: isDark ? DarkAppColors.balanceCardMuted : null,
-              ),
-              onTap: () async {
-                final now = DateTime.now();
-                final picked = await showDatePicker(
-                  context: context,
-                  initialDate: _selectedStartDate ?? now,
-                  firstDate: DateTime(now.year - 5),
-                  lastDate: DateTime(now.year + 10),
-                );
-                if (picked == null || !mounted) return;
-                setState(() {
-                  _selectedStartDate = DateTime(
-                    picked.year,
-                    picked.month,
-                    picked.day,
-                  );
-                });
+            GoalDatePickers(
+              startDate: _selectedStartDate,
+              endDate: _selectedEndDate,
+              calMode: calMode,
+              isDark: isDark,
+              onStartDatePicked: (date) {
+                if (!mounted) return;
+                setState(() => _selectedStartDate = date);
               },
-            ),
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              title: Text(
-                'End date (deadline)',
-                style: TextStyle(
-                  color: isDark ? DarkAppColors.appBarForeground : null,
-                ),
-              ),
-              subtitle: Text(
-                _selectedEndDate == null
-                    ? 'Choose an end date'
-                    : _formatDate(_selectedEndDate!, calMode),
-                style: TextStyle(
-                  color: isDark ? DarkAppColors.balanceCardMuted : null,
-                ),
-              ),
-              trailing: Icon(
-                Icons.event_outlined,
-                color: isDark ? DarkAppColors.balanceCardMuted : null,
-              ),
-              onTap: () async {
-                final now = DateTime.now();
-                final first = _selectedStartDate ?? DateTime(now.year - 5);
-                final picked = await showDatePicker(
-                  context: context,
-                  initialDate: _selectedEndDate ?? _selectedStartDate ?? now,
-                  firstDate: first,
-                  lastDate: DateTime(now.year + 10),
-                );
-                if (picked == null || !mounted) return;
-                setState(() {
-                  _selectedEndDate = DateTime(
-                    picked.year,
-                    picked.month,
-                    picked.day,
-                  );
-                });
+              onEndDatePicked: (date) {
+                if (!mounted) return;
+                setState(() => _selectedEndDate = date);
               },
             ),
             SizedBox(height: dims(12)),
@@ -458,45 +395,12 @@ class _EditGoalSheetState extends ConsumerState<EditGoalSheet> {
             if (_selectedType == 'balance_target' &&
                 _selectedPeriod != null) ...[
               const SizedBox(height: 8),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: Row(
-                  children: [
-                    Text(
-                      'Incremental growth per period',
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: isDark ? DarkAppColors.appBarForeground : null,
-                      ),
-                    ),
-                    IconButton(
-                      icon: Icon(
-                        Icons.info_outline,
-                        size: 18,
-                        color: isDark
-                            ? DarkAppColors.balanceCardMuted
-                            : const Color(0xFF6B7280),
-                      ),
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(),
-                      onPressed: () => _showGrowthModeInfo(context, isDark),
-                    ),
-                  ],
-                ),
-                subtitle: Text(
-                  _growthMode
-                      ? 'Target grows by ETB ${_amountController.text.isNotEmpty ? _amountController.text : 'X'} each ${_selectedPeriod!.toLowerCase()}'
-                      : 'Same target every ${_selectedPeriod!.toLowerCase()}',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: isDark
-                        ? DarkAppColors.balanceCardMuted
-                        : const Color(0xFF6B7280),
-                  ),
-                ),
-                value: _growthMode,
+              GoalGrowthModeTile(
+                growthMode: _growthMode,
+                period: _selectedPeriod,
+                amountText: _amountController.text,
+                isDark: isDark,
                 onChanged: (v) => setState(() => _growthMode = v),
-                activeThumbColor: isDark ? DarkAppColors.homeAccentGreen : null,
               ),
               if (_growthMode) ...[
                 SizedBox(height: dims(8)),
@@ -560,12 +464,12 @@ class _EditGoalSheetState extends ConsumerState<EditGoalSheet> {
                   foregroundColor: isDark ? Colors.white : null,
                 ),
                 child: _isSaving
-                    ? SizedBox(
+                    ? const SizedBox(
                         height: 20,
                         width: 20,
                         child: CircularProgressIndicator(
                           strokeWidth: 2,
-                          color: isDark ? Colors.white : Colors.white,
+                          color: Colors.white,
                         ),
                       )
                     : Text(widget.goal == null ? 'Create Goal' : 'Save'),
@@ -573,37 +477,6 @@ class _EditGoalSheetState extends ConsumerState<EditGoalSheet> {
             ),
           ],
         ),
-      ),
-    );
-  }
-
-  void _showGrowthModeInfo(BuildContext context, bool isDark) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: isDark
-            ? DarkAppColors.homeCardBackground
-            : Colors.white,
-        title: Text(
-          'Growth Mode',
-          style: TextStyle(
-            color: isDark ? DarkAppColors.appBarForeground : null,
-          ),
-        ),
-        content: Text(
-          'Fixed: Same target each period (e.g., "have ETB 50K every month"). Progress resets each period.\n\n'
-          'Growth: Target increases by the amount each period (e.g., "grow ETB 50K per month" '
-          '→ 50K, 100K, 150K...). Progress is cumulative from your starting balance.',
-          style: TextStyle(
-            color: isDark ? DarkAppColors.balanceCardMuted : null,
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Got it'),
-          ),
-        ],
       ),
     );
   }
