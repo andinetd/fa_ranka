@@ -1,7 +1,10 @@
+import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:faranka/database/database.dart';
 import 'package:faranka/features/receipts/data/parsers/awash_sms_parser.dart';
 import 'package:faranka/features/receipts/data/services/awash_receipt_service.dart';
+import 'package:faranka/features/transactions/domain/usecases/processors/awash_processor.dart';
 import 'package:faranka/features/transactions/domain/usecases/processors/bank_processing_support.dart';
 
 void main() {
@@ -159,29 +162,73 @@ void main() {
       // reason key exists, value is null
       // After normalize: '' (empty string)
       expect(normalized, '');
-      // null is not a non-null String with .trim().isEmpty,
-      // but after normalization it becomes '' which would be caught
     });
 
-    test('SMS parser reason is NOT carried forward to finalData in the processor pipeline', () {
+    test('SMS parser reason IS carried forward to finalData in the processor pipeline', () {
       final smsParsed = AwashSmsParser.parseAll(sms);
       final receiptParsed = AwashReceiptService.parseSmsForReceiptFields(sms);
 
-      // SMS parser extracts YODIT TESFAYE BEKELE as reason
       expect(smsParsed['reason'], 'YODIT TESFAYE BEKELE');
-
-      // Receipt fallback does NOT extract it
       expect(receiptParsed['reason'], isNull);
 
-      // The processor uses receiptParsed as finalData, overwriting smsParsed values
-      final processorReason = receiptParsed['reason'];
-      expect(processorReason, isNull);
+      // In the updated processor pipeline, smsData fields are preserved when
+      // receipt fallback produces null/empty:
+      final finalData = {...smsParsed, ...receiptParsed};
+      if (finalData['reason'] == null ||
+          (finalData['reason'] as String).trim().isEmpty) {
+        finalData['reason'] = smsParsed['reason'];
+      }
+      expect(finalData['reason'], 'YODIT TESFAYE BEKELE');
+    });
+  });
 
-      // After normalizeBusinessReason, it becomes ''
-      final normalized = BankProcessingSupport.normalizeBusinessReason(
-        processorReason?.toString(),
-      );
-      expect(normalized, '');
+  group('AwashProcessor first-try fallback processing', () {
+    late AppDatabase db;
+    late AwashProcessor processor;
+
+    setUp(() {
+      db = AppDatabase(executor: NativeDatabase.memory());
+      processor = AwashProcessor(db, null);
+    });
+
+    tearDown(() async {
+      await db.close();
+    });
+
+    test('imports Awash SMS correctly on first try without forcing Uncategorized or Empty', () async {
+      const smsNoUrl =
+          'Dear Customer, ETB 17,380 has been credited to your account '
+          'from YODIT TESFAYE BEKELE on : 2026-07-24 21:03:34 with Txn ID: '
+          '260724210334296 . Your available balance is now ETB 17,882.14.';
+
+      await db.into(db.smsInbox).insert(
+            SmsInboxCompanion.insert(
+              id: 'sms_awash_test_1',
+              address: 'AwashBank',
+              body: smsNoUrl,
+              date: DateTime.parse('2026-07-24 21:03:34'),
+            ),
+          );
+
+      final smsRow = await (db.select(db.smsInbox)
+            ..where((t) => t.id.equals('sms_awash_test_1')))
+          .getSingle();
+
+      await processor.process(smsRow);
+
+      final txns = await (db.select(db.transactions)
+            ..where((t) => t.smsId.equals('sms_awash_test_1')))
+          .get();
+
+      expect(txns, hasLength(1));
+      final txn = txns.first;
+      expect(txn.bankName, 'Awash Bank');
+      expect(txn.amount, 17380.0);
+      expect(txn.counterpartyName, 'YODIT TESFAYE BEKELE');
+      expect(txn.bankTransactionId, '260724210334296');
+      expect(txn.parsedCategory, isNot('Empty'));
+      expect(txn.parsedCategory, isNot('Uncategorized'));
+      expect(txn.parsedCategory.toLowerCase(), 'yodit tesfaye bekele');
     });
   });
 }
