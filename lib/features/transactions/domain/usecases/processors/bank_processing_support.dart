@@ -5,11 +5,89 @@ import 'package:faranka/features/transactions/domain/services/category_engine.da
 import 'package:faranka/features/receipts/data/services/receipt_fetch_session.dart';
 import 'package:flutter/foundation.dart';
 
+class OfflineDeepParseException implements Exception {
+  final String message;
+
+  const OfflineDeepParseException(this.message);
+
+  @override
+  String toString() => message;
+}
+
 class BankProcessingSupport {
   BankProcessingSupport(this.db, this.session);
 
   final AppDatabase db;
-  final ReceiptFetchSession session;
+  final ReceiptFetchSession? session;
+
+  Future<ReceiptFetchDecision> decideDeepFetch(String? url) async {
+    if (url == null || url.isEmpty) {
+      return ReceiptFetchDecision.smsOnlyNoLink;
+    }
+    final decision = session == null
+        ? ReceiptFetchDecision.fetch
+        : await session!.decide(url);
+    session?.recordDecision(decision);
+    return decision;
+  }
+
+  String? domainOf(String url) {
+    try {
+      return Uri.parse(url).host;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  void markServerUnavailable(String url) {
+    final domain = domainOf(url);
+    if (domain != null) session?.markServerUnavailable(domain);
+  }
+
+  bool isConfirmedBlocked(String url) {
+    final domain = domainOf(url);
+    if (domain == null) return false;
+    if (session == null) return true;
+    return session!.isDomainBlocked(domain);
+  }
+
+  static bool isNetworkError(Object? e) {
+    final msg = e.toString().toLowerCase();
+    return msg.contains('socketerror') ||
+        msg.contains('clientexception') ||
+        msg.contains('timeoutexception') ||
+        msg.contains('no route to host') ||
+        msg.contains('connection refused') ||
+        msg.contains('connection reset') ||
+        msg.contains('handshake exception') ||
+        msg.contains('failed host lookup');
+  }
+
+  static bool serverUnavailableFromResult(Map<String, dynamic> result) {
+    final error =
+        result['error']?.toString() ??
+        result['html_error']?.toString() ??
+        result['status_message']?.toString() ??
+        '';
+    final status =
+        result['api_status_code'] ??
+        result['pdf_status_code'] ??
+        result['status_code'];
+    if (status is num && status >= 500) return true;
+    return isNetworkError(error);
+  }
+
+  Future<void> scheduleServerDownRetry(String smsId, String bankLabel) async {
+    final txn = await (db.select(
+      db.transactions,
+    )..where((t) => t.smsId.equals(smsId))).getSingleOrNull();
+    if (txn == null) return;
+    await db.updateExtractionStatusWithRetry(
+      txn.id,
+      'attempted_failed',
+      '$bankLabel receipt server is down. Will retry automatically.',
+    );
+  }
 
   static String normalizeBusinessReason(String? reason) {
     final cleaned = _cleanBusinessReasonCandidate(reason);
@@ -104,7 +182,39 @@ class BankProcessingSupport {
     return cleanCandidate(data['transaction_type']);
   }
 
-  bool isExplicitlyEmptyReason(Map<String, dynamic> data) {
+  /// Resolves the categorization string for Telebirr transactions.
+  /// Priority: customer note (receipt) → payment reason (receipt) →
+  /// reason (SMS counterparty) → transaction type → General.
+  static String? resolveTelebirrCategoryReason(Map<String, dynamic> data) {
+    final customerNote = cleanCandidate(data['customerNote']);
+    final noteIsReal =
+        customerNote != null &&
+        !customerNote.toLowerCase().contains('scan the qr');
+
+    if (noteIsReal) {
+      return customerNote;
+    }
+
+    final paymentReason = cleanCandidate(data['paymentReason']);
+    if (paymentReason != null) {
+      return paymentReason;
+    }
+
+    final isAirtime =
+        data['isAirtime'] == true ||
+        (data['transaction_type']?.toString() ?? '').toLowerCase().contains(
+          'airtime',
+        );
+    if (isAirtime) {
+      return cleanCandidate(data['transaction_type']) ?? 'Airtime';
+    }
+
+    return cleanCandidate(data['reason']) ??
+        cleanCandidate(data['transaction_type']) ??
+        'General';
+  }
+
+  static bool isExplicitlyEmptyReason(Map<String, dynamic> data) {
     if (!data.containsKey('reason')) return false;
 
     final reason = data['reason'];
@@ -126,7 +236,7 @@ class BankProcessingSupport {
     return '';
   }
 
-  String? fallbackTransactionType(String? directionHint) {
+  static String? fallbackTransactionType(String? directionHint) {
     final direction = (directionHint ?? '').toLowerCase();
     if (direction.contains('debit')) return 'Debit';
     if (direction.contains('credit')) return 'Credit Alert';
@@ -249,7 +359,7 @@ class BankProcessingSupport {
     return false;
   }
 
-  String reasonOrEmpty(dynamic value) {
+  static String reasonOrEmpty(dynamic value) {
     final raw = value?.toString() ?? '';
     return raw.trim();
   }
@@ -276,7 +386,7 @@ class BankProcessingSupport {
     }
   }
 
-  double? toDouble(dynamic value) {
+  static double? toDouble(dynamic value) {
     if (value == null) return null;
     if (value is num) return value.toDouble();
     return double.tryParse(value.toString().replaceAll(',', ''));

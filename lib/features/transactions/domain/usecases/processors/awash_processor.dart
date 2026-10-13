@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:drift/drift.dart';
 import 'package:faranka/database/database.dart';
 import 'package:faranka/features/receipts/data/parsers/awash_sms_parser.dart';
@@ -14,6 +13,11 @@ class AwashProcessor extends BankProcessingSupport implements BankProcessor {
 
   @override
   Future<void> process(SmsInboxData sms) async {
+    if (!sms.body.contains('ETB')) {
+      await db.markAsProcessed(sms.id);
+      return;
+    }
+
     // Mobile cashout notification (message 2): skip import, retroactively
     // update the matching debit transaction to "mobile cashout" category.
     if (AwashReceiptService.isMobileCashoutNotification(sms.body)) {
@@ -25,7 +29,7 @@ class AwashProcessor extends BankProcessingSupport implements BankProcessor {
     final String? url = smsData['url'];
 
     final String? txnId = smsData['transactionId']?.toString();
-    final double amount = toDouble(smsData['amount']) ?? 0.0;
+    final double amount = BankProcessingSupport.toDouble(smsData['amount']) ?? 0.0;
     final dir = smsData['direction'] == 'Credit'
         ? TransactionDirection.credit
         : smsData['direction'] == 'Debit'
@@ -57,40 +61,48 @@ class AwashProcessor extends BankProcessingSupport implements BankProcessor {
     }
 
     Map<String, dynamic> finalData = {};
-    var attemptedDeepParse = false;
+    bool serverDown = false;
 
-    if (url != null) {
-      final fetchDecision = await session.decide(url);
-      session.recordDecision(fetchDecision);
+    if (url != null && url.isNotEmpty) {
+      final online = await NetworkStatusService.hasInternet();
+      if (!online) {
+        throw const OfflineDeepParseException(
+          'No internet connection. Deep scan skipped.',
+        );
+      }
 
-      if (fetchDecision == ReceiptFetchDecision.fetch) {
-        attemptedDeepParse = true;
-        final online = await NetworkStatusService.hasInternet();
-        if (!online) {
-          throw Exception('No internet connection. Deep scan skipped.');
-        }
-
+      final decision = await decideDeepFetch(url);
+      if (decision == ReceiptFetchDecision.fetch) {
         try {
           finalData = await AwashReceiptService.fetchAndParseHtmlReceipt(
             url,
             smsText: sms.body,
           );
+          if (BankProcessingSupport.serverUnavailableFromResult(finalData)) {
+            markServerUnavailable(url);
+            serverDown = isConfirmedBlocked(url);
+          }
         } catch (e) {
-          debugPrint('Awash HTML parse failed: $e');
+          if (BankProcessingSupport.isNetworkError(e)) {
+            markServerUnavailable(url);
+            serverDown = isConfirmedBlocked(url);
+          }
           finalData = AwashReceiptService.parseSmsForReceiptFields(sms.body);
         }
       } else {
         finalData = AwashReceiptService.parseSmsForReceiptFields(sms.body);
-        finalData['source'] = 'sms_parse_link_unavailable';
+        if (decision == ReceiptFetchDecision.smsOnlyDomainBlocked) {
+          serverDown = true;
+        }
       }
     } else {
-      session.recordDecision(ReceiptFetchDecision.smsOnlyNoLink);
+      session?.recordDecision(ReceiptFetchDecision.smsOnlyNoLink);
       finalData = AwashReceiptService.parseSmsForReceiptFields(sms.body);
     }
 
     finalData['direction'] ??= smsData['direction'];
     finalData['balance'] ??= smsData['balance'];
-    finalData['transaction_type'] ??= fallbackTransactionType(
+    finalData['transaction_type'] ??= BankProcessingSupport.fallbackTransactionType(
       finalData['direction']?.toString(),
     );
     finalData['reason'] = BankProcessingSupport.normalizeBusinessReason(
@@ -117,10 +129,12 @@ class AwashProcessor extends BankProcessingSupport implements BankProcessor {
           finalData['transaction_id']?.toString() ?? smsData['transactionId'],
       date: finalData['date']?.toString(),
       time: finalData['time']?.toString(),
-      amount: toDouble(finalData['amount']),
-      commission: toDouble(finalData['commission']) ?? toDouble(finalData['charge']),
-      vat: toDouble(finalData['vat']),
-      total: toDouble(finalData['total']),
+      amount: BankProcessingSupport.toDouble(finalData['amount']),
+      commission:
+          BankProcessingSupport.toDouble(finalData['commission']) ??
+          BankProcessingSupport.toDouble(finalData['charge']),
+      vat: BankProcessingSupport.toDouble(finalData['vat']),
+      total: BankProcessingSupport.toDouble(finalData['total']),
       fromAccount: finalData['from_account']?.toString(),
       toAccount: finalData['to_account']?.toString(),
       beneficiaryAccount:
@@ -134,7 +148,7 @@ class AwashProcessor extends BankProcessingSupport implements BankProcessor {
       vatReg: finalData['vat_reg']?.toString(),
       parseSource:
           finalData['source']?.toString() ??
-          (attemptedDeepParse ? 'HTML' : 'SMS'),
+          (url != null ? 'HTML' : 'SMS'),
     );
 
     final updatedSms = await (db.select(db.smsInbox)
@@ -143,24 +157,30 @@ class AwashProcessor extends BankProcessingSupport implements BankProcessor {
 
     final forceUncategorized = shouldForceUncategorizedCategory(
       source: finalData['source']?.toString(),
-      hadDeepParseAttempt: attemptedDeepParse,
+      hadDeepParseAttempt: url != null,
     );
 
     if (forceUncategorized || dir == TransactionDirection.unknown) {
       finalData['parsedCategory'] = 'Uncategorized';
-    } else if (isExplicitlyEmptyReason(finalData)) {
+    } else if (BankProcessingSupport.isExplicitlyEmptyReason(finalData)) {
       finalData['parsedCategory'] = 'Empty';
     } else {
       finalData['parsedCategory'] =
-          await categorizeReason(finalData['reason']?.toString());
+          await categorizeReason(finalData['reason']?.toString() ?? finalData['transaction_type']?.toString());
     }
 
+    final localPath = finalData['localReceiptPath'] as String?;
     await db.importAwashToTransactions(
       parsedData: finalData,
       originalSms: updatedSms,
       bankName: 'Awash Bank',
       defaultReason: 'Awash Bank Transaction',
+      localImagePath: localPath,
     );
+
+    if (serverDown) {
+      await scheduleServerDownRetry(sms.id, 'Awash Bank');
+    }
   }
 
   @override

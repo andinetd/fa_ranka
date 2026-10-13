@@ -3,8 +3,7 @@ import 'package:faranka/features/receipts/data/parsers/cbe_sms_parser.dart';
 import 'package:faranka/features/receipts/data/services/cbe_receipt_service.dart';
 import 'package:faranka/app/core/services/network_status_service.dart';
 import 'package:faranka/features/receipts/data/services/receipt_fetch_session.dart';
-import 'package:flutter/foundation.dart';
-import 'dart:async';
+import 'package:faranka/features/transactions/domain/services/category_engine.dart';
 
 import 'bank_processing_support.dart';
 import 'bank_processor.dart';
@@ -14,11 +13,15 @@ class CbeProcessor extends BankProcessingSupport implements BankProcessor {
 
   @override
   Future<void> process(SmsInboxData sms) async {
+    if (!sms.body.contains('ETB')) {
+      await db.markAsProcessed(sms.id);
+      return;
+    }
     final smsData = CbeSmsParser.parseAll(sms.body);
     final String? url = smsData['url']?.toString();
 
     final String? txnId = smsData['transactionId']?.toString();
-    final double amount = toDouble(smsData['amount']) ?? 0.0;
+    final double amount = BankProcessingSupport.toDouble(smsData['amount']) ?? 0.0;
     final dir = smsData['direction'] == 'Credit'
         ? TransactionDirection.credit
         : smsData['direction'] == 'Debit'
@@ -60,7 +63,7 @@ class CbeProcessor extends BankProcessingSupport implements BankProcessor {
       'beneficiary_account': null,
       'beneficiary_bank': null,
       'transaction_type':
-          fallbackTransactionType(smsData['direction']?.toString()) ??
+          BankProcessingSupport.fallbackTransactionType(smsData['direction']?.toString()) ??
           'Bank Transfer',
       'reason': url == null ? smsData['counterparty'] : null,
       'till_number': null,
@@ -74,44 +77,49 @@ class CbeProcessor extends BankProcessingSupport implements BankProcessor {
     };
 
     bool receiptFetchFailed = false;
+    bool serverDown = false;
 
     if (url != null && url.isNotEmpty) {
-      final fetchDecision = await session.decide(url);
-      session.recordDecision(fetchDecision);
+      final online = await NetworkStatusService.hasInternet();
+      if (!online) {
+        throw const OfflineDeepParseException(
+          'No internet connection. Deep scan skipped.',
+        );
+      }
+      final decision = await decideDeepFetch(url);
+      if (decision == ReceiptFetchDecision.fetch) {
+        final deepData = await CbeReceiptService.fetchAndParseReceipt(
+          url,
+          smsText: sms.body,
+        );
 
-      if (fetchDecision == ReceiptFetchDecision.fetch) {
-        final online = await NetworkStatusService.hasInternet();
-        if (!online) {
-          throw Exception('No internet connection. Deep scan skipped.');
+        finalData = {...finalData, ...deepData};
+
+        if (BankProcessingSupport.serverUnavailableFromResult(deepData)) {
+          markServerUnavailable(url);
+          serverDown = isConfirmedBlocked(url);
         }
 
-        try {
-          final deepData = await CbeReceiptService.fetchAndParseReceipt(
-            url,
-            smsText: sms.body,
-          );
-          finalData = {...finalData, ...deepData};
-          final statusCode = deepData['api_status_code'] ?? deepData['pdf_status_code'];
+        if (serverDown) {
+          final statusCode =
+              deepData['api_status_code'] ?? deepData['pdf_status_code'];
           if (statusCode != null && statusCode >= 500) {
             receiptFetchFailed = true;
             finalData['source'] = 'cbe_server_error_$statusCode';
           } else if (deepData['source'] == 'cbe_v2_api_error_page') {
             receiptFetchFailed = true;
           }
-        } on TimeoutException catch (e) {
-          debugPrint('[CbeProcessor] Fetch timeout for URL $url: $e. Keeping SMS-only parse.');
-          finalData['source'] = 'sms_parse_fetch_timeout';
-        } catch (e) {
-          debugPrint('[CbeProcessor] Fetch error for URL $url: $e. Keeping SMS-only parse.');
-          finalData['source'] = 'sms_parse_fetch_error';
         }
-      } else {
-        finalData['source'] = 'sms_parse_link_unavailable';
+      } else if (decision == ReceiptFetchDecision.smsOnlyDomainBlocked ||
+          decision == ReceiptFetchDecision.smsOnlySuspect) {
+        serverDown = true;
+        finalData['counterparty'] ??= smsData['counterparty'];
+        finalData['reason'] ??= smsData['counterparty'];
+        finalData['to_account'] ??= smsData['counterparty'];
       }
-    } else {
-      session.recordDecision(ReceiptFetchDecision.smsOnlyNoLink);
     }
 
+    // Keep SMS parse as fallback when PDF parse misses fields.
     finalData['url'] ??= url;
     finalData['transaction_id'] ??=
         finalData['referenceNumber'] ?? smsData['transactionId'];
@@ -124,7 +132,9 @@ class CbeProcessor extends BankProcessingSupport implements BankProcessor {
     finalData['vat'] ??= smsData['vat'];
     finalData['total'] ??= finalData['totalAmount'] ?? smsData['total'];
     finalData['from_account'] ??=
-        finalData['payerName'] ?? finalData['payerAccount'] ?? smsData['account'];
+        finalData['payerName'] ??
+        finalData['payerAccount'] ??
+        smsData['account'];
     finalData['to_account'] ??=
         finalData['receiverName'] ??
         finalData['receiverAccount'] ??
@@ -133,10 +143,9 @@ class CbeProcessor extends BankProcessingSupport implements BankProcessor {
     finalData['balance'] ??= smsData['balance'];
     finalData['counterparty'] ??= finalData['to_account'];
     finalData['transaction_type'] ??=
-        fallbackTransactionType(finalData['direction']?.toString()) ??
+        BankProcessingSupport.fallbackTransactionType(finalData['direction']?.toString()) ??
         'Bank Transfer';
     finalData['source'] ??= 'sms_parse';
-
     final isGenericDebitAlert = looksLikeCbeGenericDebitAlert(sms.body);
     applyCbeCategoryHints(finalData, sms.body);
     finalData['reason'] = BankProcessingSupport.normalizeBusinessReason(
@@ -145,18 +154,21 @@ class CbeProcessor extends BankProcessingSupport implements BankProcessor {
     if (isGenericDebitAlert && !hasMeaningfulCbeReason(finalData['reason'])) {
       finalData['reason'] = '';
     }
+    if (finalData['reason']?.isEmpty == true && url != null) {
+      finalData['reason'] = 'Empty';
+    }
 
+    // Prefer receipt (deep-parse) names when a receipt URL exists.
     if (url != null && url.isNotEmpty) {
-      finalData['counterparty'] =
-          dir == TransactionDirection.credit
-              ? (finalData['payerName'] ??
-                  finalData['from_account'] ??
-                  finalData['counterparty'] ??
-                  smsData['counterparty'])
-              : (finalData['receiverName'] ??
-                  finalData['to_account'] ??
-                  finalData['counterparty'] ??
-                  smsData['counterparty']);
+      finalData['counterparty'] = dir == TransactionDirection.credit
+          ? (finalData['payerName'] ??
+              finalData['from_account'] ??
+              finalData['counterparty'] ??
+              smsData['counterparty'])
+          : (finalData['receiverName'] ??
+              finalData['to_account'] ??
+              finalData['counterparty'] ??
+              smsData['counterparty']);
     }
 
     await db.updateSmsParsedFields(
@@ -166,16 +178,16 @@ class CbeProcessor extends BankProcessingSupport implements BankProcessor {
           finalData['transaction_ref']?.toString(),
       date: finalData['date']?.toString(),
       time: finalData['time']?.toString(),
-      amount: toDouble(finalData['amount']),
-      commission: toDouble(finalData['commission']),
-      vat: toDouble(finalData['vat']),
-      total: toDouble(finalData['total']),
+      amount: BankProcessingSupport.toDouble(finalData['amount']),
+      commission: BankProcessingSupport.toDouble(finalData['commission']),
+      vat: BankProcessingSupport.toDouble(finalData['vat']),
+      total: BankProcessingSupport.toDouble(finalData['total']),
       fromAccount: finalData['from_account']?.toString(),
       toAccount: finalData['to_account']?.toString(),
       beneficiaryAccount: finalData['beneficiary_account']?.toString(),
       beneficiaryBank: finalData['beneficiary_bank']?.toString(),
       transactionType: finalData['transaction_type']?.toString(),
-      reason: reasonOrEmpty(finalData['reason']),
+      reason: BankProcessingSupport.reasonOrEmpty(finalData['reason']),
       tillNumber: null,
       tin: null,
       vatReg: null,
@@ -188,31 +200,43 @@ class CbeProcessor extends BankProcessingSupport implements BankProcessor {
 
     if (dir == TransactionDirection.unknown) {
       finalData['parsedCategory'] = 'Uncategorized';
-    } else if (isExplicitlyEmptyReason(finalData)) {
-      finalData['parsedCategory'] = 'Empty';
     } else {
-      finalData['parsedCategory'] = 
-          await categorizeReason(finalData['reason']?.toString());
-      
-      debugPrint('[CBE Categorize] smsId=${sms.id} txn=${finalData['transaction_id']} reason="${finalData['reason'] ?? ''}" parsedCategory="${finalData['parsedCategory']}"');
+      if (BankProcessingSupport.isExplicitlyEmptyReason(finalData)) {
+        finalData['parsedCategory'] = 'Empty';
+      } else {
+        final categoryEngine = CategoryEngine(db);
+        final reason =
+            BankProcessingSupport.cleanCandidate(finalData['reason']) ??
+            BankProcessingSupport.cleanCandidate(finalData['transaction_type']) ??
+            'General';
+        finalData['parsedCategory'] = await categoryEngine.findOrCreateCategory(
+          reason,
+        );
+      }
     }
 
+    final localPath = finalData['localReceiptPath'] as String?;
     await db.importAwashToTransactions(
       parsedData: finalData,
       originalSms: updatedSms,
       bankName: 'CBE',
       defaultReason: 'CBE Transaction',
+      localImagePath: localPath,
     );
 
-    if (receiptFetchFailed) {
+    if (receiptFetchFailed || serverDown) {
       final txn = await (db.select(db.transactions)
             ..where((t) => t.smsId.equals(sms.id)))
           .getSingleOrNull();
       if (txn != null) {
         final sourceStr = finalData['source']?.toString() ?? '';
         final codeMatch = RegExp(r'(\d+)').firstMatch(sourceStr);
-        final errorMsg = codeMatch != null
-            ? BankProcessingSupport.serverErrorMessage(int.parse(codeMatch.group(1)!))
+        final errorMsg = serverDown
+            ? 'CBE receipt server is down. Will retry automatically.'
+            : codeMatch != null
+            ? BankProcessingSupport.serverErrorMessage(
+                int.parse(codeMatch.group(1)!),
+              )
             : sourceStr;
         await db.updateExtractionStatusWithRetry(
           txn.id,
