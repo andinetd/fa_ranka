@@ -35,12 +35,12 @@ jobs:
           storeFile=keystore.jks
           EOF
           else
-            echo "No RELEASE_KEYSTORE secret provided; signing with tracked release_keystore.jks"
+            echo "No RELEASE_KEYSTORE secret provided; signing with tracked test_release_keystore.jks"
             cat > android/app/key.properties << 'EOF'
-          storePassword=${{ secrets.KEYSTORE_PASSWORD }}
-          keyPassword=${{ secrets.KEY_PASSWORD }}
-          keyAlias=${{ secrets.KEY_ALIAS }}
-          storeFile=release_keystore.jks
+          storePassword=${{ secrets.KEYSTORE_PASSWORD || 'testpass' }}
+          keyPassword=${{ secrets.KEY_PASSWORD || 'testpass' }}
+          keyAlias=${{ secrets.KEY_ALIAS || 'upload' }}
+          storeFile=test_release_keystore.jks
           EOF
           fi
 
