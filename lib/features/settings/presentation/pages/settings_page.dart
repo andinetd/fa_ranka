@@ -17,6 +17,7 @@ import 'package:faranka/features/auth/presentation/providers/biometric_provider.
 import 'package:faranka/app/core/providers/calendar_mode_provider.dart';
 import 'package:faranka/features/settings/presentation/widgets/calendar_settings_sheet.dart';
 import 'package:faranka/app/core/services/app_settings_service.dart';
+import 'package:faranka/app/core/services/app_update_service.dart';
 import 'package:faranka/features/auth/data/biometric_service.dart';
 
 import 'package:faranka/features/settings/presentation/providers/import_status_provider.dart';
@@ -869,11 +870,76 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                       builder: (context, snapshot) {
                         final version = snapshot.data?.version ?? '--';
                         final build = snapshot.data?.buildNumber ?? '--';
-                        return ListTile(
-                          contentPadding: EdgeInsets.zero,
-                          leading: const Icon(Icons.new_releases_outlined),
-                          title: const Text('App Version'),
-                          subtitle: Text('Version $version ($build)'),
+                        return ValueListenableBuilder<AppUpdateInfo?>(
+                          valueListenable: AppUpdateService.latestUpdateNotifier,
+                          builder: (context, updateInfo, _) {
+                            final hasUpdate = updateInfo?.hasUpdate ?? false;
+                            return ListTile(
+                              contentPadding: EdgeInsets.zero,
+                              leading: Icon(
+                                hasUpdate
+                                    ? Icons.system_update
+                                    : Icons.new_releases_outlined,
+                                color: hasUpdate ? const Color(0xFF10B981) : null,
+                              ),
+                              title: Row(
+                                children: [
+                                  const Text('App Version'),
+                                  if (hasUpdate) ...[
+                                    const SizedBox(width: 8),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 6,
+                                        vertical: 2,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFF10B981)
+                                            .withValues(alpha: 0.15),
+                                        borderRadius: BorderRadius.circular(10),
+                                      ),
+                                      child: Text(
+                                        'v${updateInfo!.versionName} available',
+                                        style: const TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w600,
+                                          color: Color(0xFF10B981),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                              subtitle: Text(
+                                hasUpdate
+                                    ? 'Tap to update • Current: Version $version ($build)'
+                                    : 'Version $version ($build) • Tap to check for updates',
+                              ),
+                              onTap: () async {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('Checking for updates...'),
+                                    duration: Duration(seconds: 1),
+                                  ),
+                                );
+                                final result = await AppUpdateService.checkForUpdate(
+                                  force: true,
+                                );
+                                if (!context.mounted) return;
+                                if (result != null && result.hasUpdate) {
+                                  await AppUpdateService.showUpdateDialog(
+                                    context,
+                                    result,
+                                  );
+                                } else {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text('App is up to date!'),
+                                    ),
+                                  );
+                                }
+                              },
+                            );
+                          },
                         );
                       },
                     ),

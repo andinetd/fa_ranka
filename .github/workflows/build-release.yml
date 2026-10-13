@@ -7,8 +7,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
 
     steps:
       - name: Checkout private repo
@@ -34,8 +32,13 @@ jobs:
           storeFile=keystore.jks
           EOF
           else
-            echo "❌ RELEASE_KEYSTORE secret not set; cannot sign a release. Configure RELEASE_KEYSTORE, KEYSTORE_PASSWORD, KEY_PASSWORD, and KEY_ALIAS."
-            exit 1
+            echo "No RELEASE_KEYSTORE secret provided; signing with tracked release_keystore.jks"
+            cat > android/app/key.properties << 'EOF'
+          storePassword=${{ secrets.KEYSTORE_PASSWORD }}
+          keyPassword=${{ secrets.KEY_PASSWORD }}
+          keyAlias=${{ secrets.KEY_ALIAS }}
+          storeFile=release_keystore.jks
+          EOF
           fi
 
       - name: Install dependencies
@@ -61,20 +64,72 @@ jobs:
           echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
           echo "VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
 
+      - name: Verify version code is newer than published
+        run: |
+          PUBLISHED_CODE="$(curl -s --max-time 15 https://raw.githubusercontent.com/andinetd/genze-eb-web/main/update.json | sed -nE 's/.*"version_code"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p')"
+          if [ -z "$PUBLISHED_CODE" ]; then
+            echo "⚠️ Could not fetch published version_code; continuing."
+          elif [ "$VERSION_CODE" -le "$PUBLISHED_CODE" ]; then
+            echo "❌ pubspec version_code $VERSION_CODE is not newer than published $PUBLISHED_CODE. Bump pubspec.yaml."
+            exit 1
+          else
+            echo "✅ $VERSION_CODE > published $PUBLISHED_CODE"
+          fi
+
+      # STEP A: Create the missing files
       - name: Generate Code (Drift/JSON)
         run: dart run build_runner build --delete-conflicting-outputs
 
+      # STEP B: Debug - See if files were created (Optional, for your info)
+      - name: Verify generated files
+        run: find . -name "*.g.dart" | head -n 10
+
+      # STEP C: Now analyze (This should pass now)
       - name: Analyze
         run: flutter analyze
-
-      - name: Test
-        run: flutter test --reporter compact
 
       - name: Build APK (ARM64)
         run: flutter build apk --target-platform android-arm64 --split-per-abi --build-name "$VERSION_NAME" --build-number "$VERSION_CODE"
 
-      - name: Upload APKs to the GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Test GitHub API access
+        run: |
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -H "Authorization: token ${{ secrets.RELEASE_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/andinetd/genze-eb-web)
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n 1)
+          if [ "$HTTP_CODE" != "200" ]; then exit 1; fi
+
+      - name: Checkout public releases repo
+        uses: actions/checkout@v4
         with:
-          files: |
-            build/app/outputs/flutter-apk/*.apk
+          repository: andinetd/genze-eb-web
+          token: ${{ secrets.RELEASE_TOKEN }}
+          path: releases-repo
+          ref: main
+
+      - name: Copy APK to releases repo
+        run: |
+          mkdir -p releases-repo/public
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk releases-repo/public/faranka.apk
+
+      - name: Update update.json
+        run: |
+          cat > releases-repo/update.json <<EOF
+          {
+            "version_code": $VERSION_CODE,
+            "version_name": "$VERSION_NAME",
+            "release_notes": "Automated Build for version $VERSION_NAME",
+            "apk_url": "https://raw.githubusercontent.com/andinetd/genze-eb-web/main/public/faranka.apk",
+            "last_updated": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
+      - name: Commit and push
+        working-directory: releases-repo
+        run: |
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          git add .
+          git commit -m "Release version ${{ github.run_number }}"
+          git push

@@ -18,21 +18,33 @@ version: 1.1.11+88
 ```
 
 - **Version name** (`1.1.11`) — the human-readable release shown to users ("Version 1.1.11").
-- **Version code** (`88`) — the monotonically increasing integer the app store uses
-  to determine upgrade ordering. It must **strictly increase** between store uploads.
+- **Version code** (`88`) — the monotonically increasing integer used to determine upgrade ordering. It must **strictly increase** with each release.
 
-## 2. Versioning rules
+## 2. Release & In-App Update Architecture
 
-1. **Bump `version` in `pubspec.yaml` before every release.**
-2. **`version_code` must only ever increase.** Never re-upload the same or a lower
-   code to the store.
+Faranka uses an automated release pipeline combined with client-side update checking:
 
-## 3. Building a release
+1. **Triggering a Release**:
+   - Committing and pushing code to the repository **does not** trigger a release build or update.
+   - Releases are triggered by **publishing a GitHub Release** with a tag matching `v<version_name>` (e.g., `v1.1.12`).
+   - The workflow (`.github/workflows/build-release.yml`):
+     - Validates that `version_code` in `pubspec.yaml` is strictly greater than the one currently published on `andinetd/genze-eb-web/main/update.json`.
+     - Builds the split-per-abi release APK (`app-arm64-v8a-release.apk`).
+     - Copies the APK to `andinetd/genze-eb-web/public/faranka.apk`.
+     - Automatically updates `andinetd/genze-eb-web/update.json` with the new version code, version name, release notes, and timestamp.
+2. **In-App Update Detection**:
+   - The app periodically checks `https://raw.githubusercontent.com/andinetd/genze-eb-web/main/update.json` via `AppUpdateService`.
+   - On startup, a silent background check runs (rate-limited to at most once every 12 hours).
+   - If an update is detected (`remote.version_code > local.version_code`), an "UPDATE" badge appears on the App Version tile in **Settings**.
+   - Users can tap the App Version tile in Settings at any time to manually check for updates.
+   - When an update is available, tapping the update prompt or manual check opens a dialog with the release notes and a direct button to download the APK via browser/external app.
 
-### Prerequisites
+## 3. Versioning rules
 
-- A signing keystore configured via `android/app/key.properties` (this file is
-  gitignored). See [`docs/ANDROID_SIGNING_RUNBOOK.md`](ANDROID_SIGNING_RUNBOOK.md).
+1. **Bump `version` in `pubspec.yaml` before publishing a release.**
+2. **`version_code` must only ever increase.** The CI pipeline rejects builds where `version_code` is less than or equal to the published version.
+
+## 4. Releasing a New Version
 
 ### Steps
 
@@ -48,24 +60,16 @@ version: 1.1.11+88
    flutter test
    ```
 
-3. **Build the artifact** against the app store or sideload:
-   ```bash
-   flutter build appbundle --release        # store upload (AAB)
-   flutter build apk --release              # sideload APK
-   ```
+3. **Commit and push** to the branch (e.g., `main`).
 
-4. **Sign** the artifact if `android/app/key.properties` is not configured to sign
-   automatically (store-password and key settings in `android/app/build.gradle.kts`).
+4. **Publish a GitHub Release**:
+   - Go to GitHub -> Releases -> Draft a new release.
+   - Set tag to `v1.1.12` (must match `v<version_name>`).
+   - Publish the release.
+   - GitHub Actions will build the release APK, upload it to the `genze-eb-web` repo, and update `update.json`.
 
-## 4. Distribution
-
-- **Google Play:** upload the generated `.aab` via the Play Console, then promote
-  from the internal/closed track to production as appropriate.
-- **Sideload tests:** share the release-signed APK directly (e.g. a test cohort).
-  Users must uninstall an existing install if the signing certificate differs.
-
-Users receive updates through the ordinary store update flow. There is no OTA
-endpoint, no `update.json`, and no in-app update logic in the application.
+5. **Client Update Availability**:
+   - Within minutes of workflow completion, installed apps running version 88 or earlier will detect the update via `update.json`.
 
 ## 5. Verification checklist
 

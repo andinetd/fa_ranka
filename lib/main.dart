@@ -21,6 +21,7 @@ import 'features/budgets/domain/usecases/check_budget_alerts.dart';
 import 'features/transactions/domain/usecases/transaction_processor.dart';
 import 'infrastructure/background/background_worker.dart';
 import 'app/core/services/app_settings_service.dart';
+import 'app/core/services/app_update_service.dart';
 import 'app/core/services/notification_service.dart';
 import 'app/core/services/widget_update_service.dart';
 
@@ -322,6 +323,14 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      // Non-blocking silent update check after initial render
+      Future.delayed(const Duration(seconds: 3), () {
+        if (mounted) {
+          unawaited(AppUpdateService.checkForUpdate());
+        }
+      });
+    });
   }
 
   @override
@@ -391,14 +400,14 @@ Future<void> _handleForegroundSms(SmsMessage message) async {
 
   try {
     final processor = TransactionProcessor(database);
-    await processor.processIncomingSms(body, sender);
+    final createdTxn = await processor.processIncomingSms(body, sender);
 
     if (AppSettingsService.transactionNotificationsNotifier.value) {
       final notification = NotificationService.instance;
       await notification.showTransactionNotification(
-        amount: 0, // placeholder; actual amount comes from parsed txn
-        category: '',
-        bankName: sender,
+        amount: createdTxn?.amount ?? 0,
+        category: createdTxn?.parsedCategory ?? '',
+        bankName: createdTxn?.bankName ?? sender,
       );
     }
 
