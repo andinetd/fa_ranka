@@ -18,6 +18,8 @@ import 'package:faranka/features/transactions/presentation/widgets/receipt_previ
 import 'package:faranka/features/transactions/presentation/widgets/edit_category_sheet.dart';
 import 'package:faranka/features/transactions/presentation/widgets/split_category_sheet.dart';
 import 'package:faranka/features/transactions/presentation/widgets/transaction_insights_card.dart';
+import 'package:faranka/features/transactions/presentation/providers/transaction_data_providers.dart'
+    show transactionDataProvider;
 import 'package:faranka/features/transactions/domain/usecases/transaction_processor.dart';
 
 class ReceiptDetailsPage extends ConsumerStatefulWidget {
@@ -30,6 +32,7 @@ class ReceiptDetailsPage extends ConsumerStatefulWidget {
 }
 
 class _ReceiptDetailsPageState extends ConsumerState<ReceiptDetailsPage> {
+  late SmsInboxData _currentSms;
   late AwashTransaction transaction;
   final _splitKey = GlobalKey();
   String? _localReceiptPath;
@@ -68,21 +71,22 @@ class _ReceiptDetailsPageState extends ConsumerState<ReceiptDetailsPage> {
   @override
   void initState() {
     super.initState();
-    _initializeData();
+    _currentSms = widget.sms;
+    _initializeData(_currentSms);
   }
 
-  void _initializeData() {
-    final addressLower = widget.sms.address.toLowerCase();
+  void _initializeData(SmsInboxData sms) {
+    final addressLower = sms.address.toLowerCase();
     final isCbe = _bankForAddress(addressLower) == ReceiptPreviewBank.cbe;
     final isTelebirr = _bankForAddress(addressLower) == ReceiptPreviewBank.telebirr;
     final isBoa = _bankForAddress(addressLower) == ReceiptPreviewBank.boa;
     final data = isCbe
-        ? CbeSmsParser.parseAll(widget.sms.body)
+        ? CbeSmsParser.parseAll(sms.body)
         : isTelebirr
-            ? TelebirrSmsParser.parseAll(widget.sms.body)
+            ? TelebirrSmsParser.parseAll(sms.body)
             : isBoa
-                ? BoaSmsParser.parseAll(widget.sms.body)
-                : AwashSmsParser.parseAll(widget.sms.body);
+                ? BoaSmsParser.parseAll(sms.body)
+                : AwashSmsParser.parseAll(sms.body);
 
     transaction = AwashTransaction(
       direction: data['direction'],
@@ -94,23 +98,23 @@ class _ReceiptDetailsPageState extends ConsumerState<ReceiptDetailsPage> {
       url: data['url'],
     );
 
-    transaction.parseSource = widget.sms.parseSource;
-    transaction.parsedTxnId = widget.sms.transactionId;
-    transaction.receiptDate = widget.sms.parsedDate;
-    transaction.receiptTime = widget.sms.parsedTime;
-    transaction.amount = widget.sms.amount;
-    transaction.commission = widget.sms.commission;
-    transaction.vat = widget.sms.vat;
-    transaction.total = widget.sms.total;
-    transaction.fromAccount = widget.sms.fromAccount;
-    transaction.toAccount = widget.sms.toAccount;
-    transaction.beneficiaryAccount = widget.sms.beneficiaryAccount;
-    transaction.beneficiaryBank = widget.sms.beneficiaryBank;
-    transaction.txnType = widget.sms.transactionType;
-    transaction.reason = widget.sms.reason;
-    transaction.tillNumber = widget.sms.tillNumber;
-    transaction.tin = widget.sms.tin;
-    transaction.vatReg = widget.sms.vatReg;
+    transaction.parseSource = sms.parseSource;
+    transaction.parsedTxnId = sms.transactionId;
+    transaction.receiptDate = sms.parsedDate;
+    transaction.receiptTime = sms.parsedTime;
+    transaction.amount = sms.amount;
+    transaction.commission = sms.commission;
+    transaction.vat = sms.vat;
+    transaction.total = sms.total;
+    transaction.fromAccount = sms.fromAccount;
+    transaction.toAccount = sms.toAccount;
+    transaction.beneficiaryAccount = sms.beneficiaryAccount;
+    transaction.beneficiaryBank = sms.beneficiaryBank;
+    transaction.txnType = sms.transactionType;
+    transaction.reason = sms.reason;
+    transaction.tillNumber = sms.tillNumber;
+    transaction.tin = sms.tin;
+    transaction.vatReg = sms.vatReg;
 
     _loadLocalReceiptPath();
   }
@@ -247,10 +251,23 @@ class _ReceiptDetailsPageState extends ConsumerState<ReceiptDetailsPage> {
     try {
       final processor = TransactionProcessor(db);
       final result = await processor.reparseTransaction(txn.id);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(result.message)),
-      );
+
+      final freshSms = await (db.select(db.smsInbox)
+            ..where((s) => s.id.equals(_currentSms.id)))
+          .getSingleOrNull();
+
+      if (mounted) {
+        if (freshSms != null) {
+          setState(() {
+            _currentSms = freshSms;
+            _initializeData(_currentSms);
+          });
+        }
+        ref.invalidate(transactionDataProvider);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(result.message)),
+        );
+      }
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -369,7 +386,7 @@ class _ReceiptDetailsPageState extends ConsumerState<ReceiptDetailsPage> {
               ),
             ReceiptPreview(
               previewKey: previewKey,
-              sms: widget.sms,
+              sms: _currentSms,
               transaction: transaction,
             ),
             StreamBuilder<List<TransactionData>>(

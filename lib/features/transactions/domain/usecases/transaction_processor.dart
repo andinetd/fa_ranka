@@ -497,29 +497,45 @@ class TransactionProcessor {
 
     final newReason = finalData['reason']?.toString() ?? txn.reasonRawText;
     final amount = BankProcessingSupport.toDouble(finalData['amount']) ?? txn.amount;
+    final counterparty = finalData['counterparty']?.toString();
+    final bankTxnId = finalData['transactionId']?.toString() ??
+        finalData['transaction_id']?.toString() ??
+        finalData['referenceNumber']?.toString();
+    final refNumber = finalData['referenceNumber']?.toString() ??
+        finalData['transaction_ref']?.toString();
+    final balanceAfter = BankProcessingSupport.toDouble(finalData['balance']) ??
+        BankProcessingSupport.toDouble(finalData['balance_after']);
+    final commission = BankProcessingSupport.toDouble(finalData['commission']) ?? 0.0;
+    final vat = BankProcessingSupport.toDouble(finalData['vat']) ?? 0.0;
+    final localReceiptPath = finalData['localReceiptPath']?.toString() ?? txn.localReceiptPath;
 
     await (db.update(
       db.transactions,
     )..where((t) => t.id.equals(transactionId))).write(
       TransactionsCompanion(
         amount: Value(amount),
-        counterpartyName: Value(finalData['counterparty']?.toString()),
-        bankTransactionId: Value(finalData['transactionId']?.toString()),
-        referenceNumber: Value(finalData['referenceNumber']?.toString()),
-        balanceAfter: Value(
-          BankProcessingSupport.toDouble(finalData['balance']) ??
-              BankProcessingSupport.toDouble(finalData['balance_after']),
-        ),
+        counterpartyName: Value(counterparty),
+        bankTransactionId: Value(bankTxnId),
+        referenceNumber: Value(refNumber),
+        balanceAfter: Value(balanceAfter),
         receiptUrl: Value(url),
+        localReceiptPath: Value(localReceiptPath),
         reasonRawText: Value(newReason),
         normalizedReason: Value(newReason.toLowerCase().trim()),
         parsedCategory: Value(newCategory),
-        commission: Value(BankProcessingSupport.toDouble(finalData['commission']) ?? 0.0),
-        vat: Value(BankProcessingSupport.toDouble(finalData['vat']) ?? 0.0),
+        commission: Value(commission),
+        vat: Value(vat),
       ),
     );
 
-    if (newCategory != txn.parsedCategory || newReason != txn.reasonRawText) {
+    final hasChanges = newCategory != txn.parsedCategory ||
+        newReason != txn.reasonRawText ||
+        amount != txn.amount ||
+        counterparty != txn.counterpartyName ||
+        bankTxnId != txn.bankTransactionId ||
+        localReceiptPath != txn.localReceiptPath;
+
+    if (hasChanges) {
       return ReparseResult(
         updated: true,
         message: 'Reparsed — category: $newCategory',
