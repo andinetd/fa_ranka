@@ -3,10 +3,13 @@ name: Build & Release APK
 on:
   release:
     types: [published]
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout private repo
@@ -19,7 +22,7 @@ jobs:
           cache: true
 
       - name: Prepare release keystore
-        if: ${{ github.event_name == 'release' }}
+        if: ${{ github.event_name == 'release' || github.event_name == 'workflow_dispatch' }}
         run: |
           if [ -n "${{ secrets.RELEASE_KEYSTORE }}" ]; then
             echo "Decoding keystore from secret"
@@ -57,7 +60,7 @@ jobs:
             echo "❌ Could not parse numeric version code from pubspec.yaml"
             exit 1
           fi
-          if [ "${GITHUB_REF_NAME}" != "v${VERSION_NAME}" ]; then
+          if [ "${{ github.event_name }}" = "release" ] && [ "${GITHUB_REF_NAME}" != "v${VERSION_NAME}" ]; then
             echo "❌ Release tag '${GITHUB_REF_NAME}' does not match pubspec version 'v${VERSION_NAME}'"
             exit 1
           fi
@@ -91,6 +94,20 @@ jobs:
       - name: Build APK (ARM64)
         run: flutter build apk --target-platform android-arm64 --split-per-abi --build-name "$VERSION_NAME" --build-number "$VERSION_CODE"
 
+      # --- REPOSITORY 1: Current repo (fa_ranka) GitHub Release ---
+      - name: Upload APK to GitHub Release (current repo)
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: "v${{ env.VERSION_NAME }}"
+          name: "v${{ env.VERSION_NAME }}"
+          draft: false
+          prerelease: false
+          files: |
+            build/app/outputs/flutter-apk/*.apk
+
+      # --- REPOSITORY 2: Public website & updates repo (genze-eb-web) ---
       - name: Test GitHub API access
         run: |
           RESPONSE=$(curl -s -w "\n%{http_code}" \

@@ -30,8 +30,8 @@ Faranka uses an automated release pipeline combined with client-side update chec
    - The workflow (`.github/workflows/build-release.yml`):
      - Validates that `version_code` in `pubspec.yaml` is strictly greater than the one currently published on `andinetd/genze-eb-web/main/update.json`.
      - Builds the split-per-abi release APK (`app-arm64-v8a-release.apk`).
-     - Copies the APK to `andinetd/genze-eb-web/public/faranka.apk`.
-     - Automatically updates `andinetd/genze-eb-web/update.json` with the new version code, version name, release notes, and timestamp.
+     - **Repo 1 (`andinetd/fa_ranka`)**: Uploads the release APK artifacts directly to the GitHub Release of the primary repository.
+     - **Repo 2 (`andinetd/genze-eb-web`)**: Copies the APK to `andinetd/genze-eb-web/public/faranka.apk` and updates `update.json` with the new version code, version name, release notes, and timestamp.
 2. **In-App Update Detection**:
    - The app periodically checks `https://raw.githubusercontent.com/andinetd/genze-eb-web/main/update.json` via `AppUpdateService`.
    - On startup, a silent background check runs (rate-limited to at most once every 12 hours).
