@@ -138,7 +138,7 @@ class TransactionProcessor {
   }
 
   /// 1. NEW METHOD: For the Background Worker (Wake-on-SMS)
-  Future<void> processIncomingSms(String body, String address) async {
+  Future<TransactionData?> processIncomingSms(String body, String address) async {
     // Save raw message first so we can always retry from local state.
     final String tempId = _runtimeSmsId(address, body);
 
@@ -160,6 +160,9 @@ class TransactionProcessor {
       db.smsInbox,
     )..where((t) => t.id.equals(tempId))).getSingle();
     await processSmsSafely(smsRecord);
+
+    return (db.select(db.transactions)..where((t) => t.smsId.equals(tempId)))
+        .getSingleOrNull();
   }
 
   Future<void> processSmsSafely(SmsInboxData sms) async {

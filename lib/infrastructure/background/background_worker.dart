@@ -98,8 +98,21 @@ void callbackDispatcher() {
         }
 
         debugPrint("Native: Processing message from $sender");
-        await processor.processIncomingSms(body, sender);
+        final createdTxn = await processor.processIncomingSms(body, sender);
         debugPrint("Native: Background processing complete for $sender");
+
+        final prefs = await SharedPreferences.getInstance();
+        final txnNotificationsEnabled =
+            prefs.getBool(AppSettingsService.keyTransactionNotifications) ?? true;
+        if (txnNotificationsEnabled) {
+          final notification = NotificationService.instance;
+          await notification.initialize();
+          await notification.showTransactionNotification(
+            amount: createdTxn?.amount ?? 0,
+            category: createdTxn?.parsedCategory ?? '',
+            bankName: createdTxn?.bankName ?? sender,
+          );
+        }
       } else if (task == syncCatchupTask) {
         debugPrint('Native: Running periodic catch-up sweep');
 
@@ -264,15 +277,15 @@ void callbackDispatcher() {
             cadence: 'daily',
             totalSpending: result.total,
             topCategory: result.topCategory,
-            transactionDays: result.count,
+            transactionDays: 1,
           );
         } else if (cadence == 'weekly') {
           final summary = await WeeklyInsightsService.calculateWeeklyInsights(
             database,
             now,
           );
-          final activeDays = summary.dailyData
-              .fold<int>(0, (sum, d) => sum + (d.amount > 0 ? 1 : 0));
+          final activeDays = summary.dailySpending.values
+              .fold<int>(0, (sum, spend) => sum + (spend > 0 ? 1 : 0));
           await notification.showSummaryNotification(
             cadence: 'weekly',
             totalSpending: summary.totalSpending,
@@ -288,7 +301,7 @@ void callbackDispatcher() {
             cadence: 'monthly',
             totalSpending: result.total,
             topCategory: result.topCategory,
-            transactionDays: result.count,
+            transactionDays: now.day,
           );
         }
 
